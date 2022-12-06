@@ -1,0 +1,36 @@
+@startuml
+actor       Admin             as admin
+boundary    adminUI           as adminUI
+collections groupUserAttributeController  as groupUserAttributeController
+collections groupUserAttributeService      as groupUserAttributeService
+entity      GroupUserAttributeRepository   as GroupUserAttributeRepository
+database    DB                as DB
+
+admin -> adminUI: [Web page] /admin/user-management?tab=Attributes
+adminUI --> groupUserAttributeController: GET /group-user-attributes/verify?label=<label>&groupUserAttributeTypeId=<id>
+groupUserAttributeController --> groupUserAttributeService: verifyGroupUserAttribute()
+groupUserAttributeService --> GroupUserAttributeRepository: getGroupUserAttributeTypeByLabelType()
+GroupUserAttributeRepository --> DB: getOne() query
+DB --> GroupUserAttributeRepository: GroupUserAttributeEntity
+GroupUserAttributeRepository --> groupUserAttributeService: GroupUserAttributeEntity
+
+alt#Gold if duplicate found
+groupUserAttributeService --> groupUserAttributeController: true
+groupUserAttributeController --> adminUI: true
+adminUI --> admin: Validation error:  Attribute already exists
+else
+groupUserAttributeService --> groupUserAttributeController: false
+groupUserAttributeController --> adminUI: false
+adminUI --> groupUserAttributeController: POST /group-user-attributes/create
+end
+
+groupUserAttributeController --> groupUserAttributeService: createGroupUserAttribute()
+groupUserAttributeService --> GroupUserAttributeRepository: createGroupUserAttribute()
+GroupUserAttributeRepository --> DB: insert() GroupUserAttributeEntity
+DB --> GroupUserAttributeRepository: CreateGroupUserAttributeResponse
+GroupUserAttributeRepository --> groupUserAttributeService: CreateGroupUserAttributeResponse
+groupUserAttributeService --> groupUserAttributeController: CreateGroupUserAttributeResponse
+groupUserAttributeController --> adminUI: CreateGroupUserAttributeResponse
+adminUI --> admin: Success message
+
+@enduml

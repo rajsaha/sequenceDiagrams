@@ -1,0 +1,163 @@
+@startuml
+actor       Admin             as admin
+boundary    adminUI           as adminUI
+control     groupController   as groupController
+control     jbicController    as jbicController
+collections groupService      as groupService
+collections jbicService      as jbicService
+collections arloAuthMiddleware as arloAuthMiddleware
+collections arloAuthService  as arloAuthService
+collections arloResourcesService as arloResourcesService
+entity      JBICOrganizationsRepository as JBICOrganizationsRepository
+entity      GroupRepository       as GroupRepository
+database    DB                as DB
+database    Cache                as Cache
+participant ARLO              as ARLO
+
+activate adminUI #lightgrey
+admin -> adminUI : [Web page] /group/<ID>
+admin -> adminUI : open settings
+admin -> adminUI : Submit form
+alt#Gold #lightblue Success
+adminUI --> adminUI: Form valid
+else #pink Failure: Form invalid
+adminUI --> admin: Show form error(s)
+end
+
+
+group update group and update ARLO organization
+adminUI -> groupController : [HTTPS POST] /group/<ID>
+alt#Gold #lightblue Success
+adminUI -> groupController: [HTTPS POST] /group/<ID>
+else #pink Failure: Bad request
+groupController -> adminUI: [Error: 400] Bad Request, validation failed
+adminUI --> admin: show dialog box with error
+end
+
+activate groupController
+groupController -> groupService : CALL fetchAndUpdateGroup (payload)
+activate groupService
+groupService -> groupService : CALL getByID(<ID>)
+groupService -> GroupRepository : CALL getByID(<ID>)
+activate GroupRepository
+activate DB
+GroupRepository -> DB : getOne() query
+DB --> GroupRepository : GroupEntity
+GroupRepository --> groupService : GroupEntity
+
+groupService -> groupService : CALL update (GroupEntity, payload)
+
+
+groupService -> GroupRepository : CALL update (GroupEntity, payload)
+
+GroupRepository -> DB : update() query
+
+alt#Gold #ADE792 Success
+DB --> GroupRepository : groupEntity
+GroupRepository --> groupService : groupEntity
+else #pink Failure: SQL error
+DB --> GroupRepository : [Error] SQL Error
+GroupRepository --> groupService: [Error] SQL Error
+deactivate DB
+groupService -->groupController: [Error] Unprocessable Entity, Error in updating group
+groupController --> adminUI : [Error: 422] Unprocessable Entity, Error in updating group
+adminUI -> admin : show dialog box with error
+end
+deactivate GroupRepository
+
+groupService -> jbicService : CALL upsertOrganization (groupEntity, payload)
+activate jbicService #lightblue
+
+group ARLO: update organization
+jbicService --> arloAuthMiddleware: Check access_token
+activate arloAuthMiddleware #yellow
+arloAuthMiddleware --> arloAuthService: CALL checkAccessTokenValidity()
+activate arloAuthService #red
+activate Cache #purple
+arloAuthService --> Cache: check for access token **existence** or **expiry** in **jaas_jbic_arlo_oauth2_tokens**
+Cache --> arloAuthService: token AND expiry
+group No access token found
+arloAuthService --> ARLO: GET /oauth/connect/authorize?client_id=ENV_VARIABLE
+alt#Gold #ADE792 Success
+activate ARLO #FFD100
+ARLO --> arloAuthService: GET ENV.ARLO_CALLBACK/oauth/arlo/callback?code=authorisation_code
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token
+ARLO --> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Store** access_token, refresh_token, expires_in
+else #pink Failure
+ARLO --> arloAuthService: [Error: 401] Access Denied
+arloAuthService --> arloAuthMiddleware: [Error: 401] Access Denied
+arloAuthMiddleware --> jbicService: [Error: 401] Access Denied
+activate jbicController #lightgreen
+jbicService --> jbicController: [Error: 500] Error in establishing connection with ARLO
+jbicController --> adminUI: [Error: 500] Error in establishing connection with ARLO
+deactivate jbicController
+adminUI -> admin : show dialog box with error
+end
+end
+group Access token found
+group Access token expired
+activate arloAuthService #red
+arloAuthService --> ARLO: /ENV.PLATFORM_NAME/oauth/connect/accesstokenvalidation
+group Token invalid
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token
+ARLO --[#green]> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Update** access_token, refresh_token, expires_in
+deactivate Cache
+end
+end
+arloAuthService --[#green]> arloAuthService: access_token not expired
+arloAuthService --[#green]> arloAuthMiddleware: access_token
+deactivate arloAuthMiddleware
+deactivate arloAuthService #red
+arloAuthMiddleware --[#green]> jbicService: access_token
+end
+jbicService --> arloResourcesService: CALL updateOrganization()
+
+activate arloResourcesService #teal
+arloResourcesService -> ARLO : PATCH /auth/resources/organisations/<ARLO_Organization_id>/
+
+note right
+POST request is not supported to update organizations
+end note
+
+alt#Gold #ADE792 Success
+ARLO --> arloResourcesService : [Ok: 200] Success
+arloResourcesService --> jbicService : [Ok: 200] Success
+jbicService --> groupService : Success
+deactivate jbicService
+groupService --> groupController : Success
+deactivate groupService
+groupController --> adminUI: [Ok: 200] Success
+adminUI -> admin : redirect to [web page] /group/<ID>
+else #pink Failure
+
+ARLO --> arloResourcesService: [Error: 401] Unauthorized
+ARLO --> arloResourcesService: [Error: 502] Bad gateway
+ARLO --> arloResourcesService: [Error: 500] Error in updating organization
+deactivate ARLO
+
+activate jbicService #lightblue
+arloResourcesService --> jbicService: [Error: 401] Unauthorized
+arloResourcesService --> jbicService: [Error: 502] Bad gateway
+arloResourcesService --> jbicService: [Error: 500] Error in updating organization
+deactivate jbicService
+activate groupService
+deactivate arloResourcesService
+jbicService --> groupService: [Error] Error in updating organization in ARLO
+groupService -> groupService: [Error] CALL rollbackGroup(GroupEntity)
+activate GroupRepository
+groupService -> GroupRepository: [Error] CALL rollbackGroup(GroupEntity)
+activate DB
+GroupRepository -> DB : rollback GroupEntity
+DB --> GroupRepository : rollback success
+GroupRepository -->groupService : rollback success
+deactivate DB
+deactivate groupService
+deactivate GroupRepository
+groupService --> groupController : [Error] Error in updating organization in ARLO
+groupController --> adminUI : [Error: 503] Service not available, Error in updating organization
+adminUI -> admin : show dialog box with error
+end
+end
+@enduml

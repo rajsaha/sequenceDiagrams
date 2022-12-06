@@ -1,0 +1,149 @@
+@startuml
+actor       Admin             as admin
+participant ARLO              as ARLO
+boundary    arloWebHookController as arloWebHookController
+collections arloAuthService  as arloAuthService
+collections arloAuthMiddleware as arloAuthMiddleware
+collections arloWebhookService as arloWebhookService
+collections groupService      as groupService
+collections licenseService    as licenseService
+entity      groupRepository   as groupRepository
+entity      licenseRepository as licenseRepository
+database    DB                as DB
+database    Cache             as Cache
+collections loggerService     as loggerService
+
+admin -> ARLO : update course
+
+group recceive and identify event of ARLO
+ARLO -> arloWebHookController : CALL API: /arlo/webhook/event-listener
+activate arloWebhookService
+arloWebHookController -> arloWebhookService : CALL verifySignature(payload)
+
+arloWebhookService -> loggerService : CALL addArloWebhookSuccessResponse(payload)
+
+arloWebhookService -> arloWebhookService : CALL identifyEventType(payload)
+arloWebhookService --> arloAuthMiddleware: Check access_token
+activate arloAuthMiddleware #yellow
+arloAuthMiddleware --> arloAuthService: CALL checkAccessTokenValidity()
+activate arloAuthService #red
+activate Cache #purple
+arloAuthService --> Cache: check for access token **existence** or **expiry** in **jaas_jbic_arlo_oauth2_tokens**
+Cache --> arloAuthService: token AND expiry
+group No access token found
+arloAuthService --> ARLO: GET /oauth/connect/authorize?client_id=ENV_VARIABLE
+alt#Gold #ADE792 Success
+activate ARLO #FFD100
+ARLO --> arloAuthService: GET ENV.ARLO_CALLBACK/oauth/arlo/callback?code=authorisation_code
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token
+ARLO --> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Store** access_token, refresh_token, expires_in
+else #pink Failure
+ARLO --> arloAuthService: [Error: 401] Access Denied
+arloAuthService --> arloAuthMiddleware: [Error: 401] Access Denied
+arloAuthMiddleware --> arloWebhookService: [Error: 401] Access Denied
+arloWebhookService --> loggerService: CALL addArloWebhookErrorResponse(payload)
+end
+end
+
+group Access token found
+group Access token expired
+activate arloAuthService #red
+arloAuthService --> ARLO: /ENV.PLATFORM_NAME/oauth/connect/accesstokenvalidation
+group Token invalid
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token
+ARLO --[#green]> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Update** access_token, refresh_token, expires_in
+deactivate Cache
+end
+end
+arloAuthService --[#green]> arloAuthService: access_token not expired
+arloAuthService --[#green]> arloAuthMiddleware: access_token
+arloAuthMiddleware --[#green]> arloWebhookService: access_token
+deactivate arloAuthService
+deactivate arloAuthMiddleware
+end
+
+arloWebhookService -> ARLO : /api/<Event_DATE>/auth/resources/events/{EventID}/
+
+
+ARLO --> arloWebhookService : [Ok: 200] Event details JSON
+deactivate ARLO
+
+group update subgroup based on arlo event payload
+arloWebhookService -> groupService : CALL updateSubGroupFromArloEvent(arloEventPayload)
+
+activate groupService
+groupService -> groupRepository : CALL getSubGroupFromCourseId(courseId = arloEventPayload["courseId"])
+
+activate groupRepository
+groupRepository -> DB : getOne() query
+
+activate DB
+
+alt#Gold #ADE792 Success
+DB -> groupRepository : GroupEntity
+deactivate DB
+
+groupRepository -> groupService : GroupEntity
+deactivate groupRepository
+else #lightblue No organization found
+DB -> groupRepository : [SqlError] No such record found
+groupRepository -> groupService : [SqlError] No such record found
+groupService -> loggerService : CALL eventErrorResponse(eventType = "ArloSubGroupGetCourseId", eventpayload, error)
+groupService -> arloWebhookService : No parent group found with that organization ID
+end
+
+groupService -> groupRepository : CALL updateArloSubGroup(arloEventPayload, subGroup: GroupEntity)
+
+activate groupRepository
+groupRepository -> DB : update() query
+
+alt#Gold #ADE792 Success
+DB -> groupRepository : GroupEntity
+groupRepository -> groupService : GroupEntity
+else #pink Failure
+activate DB
+DB -> groupRepository : [SqlError] SQL Error
+groupRepository -> groupService : [SqlError] SQL Error
+groupService -> loggerService : CALL eventErrorResponse(eventType = "ArloSubGroupUpdate", eventpayload, error)
+groupService -> arloWebhookService : [Error] Unprocessable Entity, Error in updating sub group
+deactivate DB
+end
+
+deactivate groupRepository
+
+groupService -> licenseService : CALL updateLicense (subGroup: GroupEntity, seatsCount = arloEventPayload["seatsCount"], product: SUMARI | PACES)
+
+activate licenseService
+licenseService -> licenseRepository : CALL getLicenseForSubGroup(subGroup: GroupEntity)
+
+activate licenseRepository
+licenseRepository -> DB : getOne() query
+DB --> licenseRepository: licenseEntity
+licenseRepository --> licenseService: licenseEntity
+licenseService --> licenseRepository: updateLicense(license: LicenseEntity, seatsCount)
+licenseRepository --> DB: update() query
+
+alt#Gold #ADE792 Success
+DB -> licenseRepository : LicenseEntity
+licenseRepository -> licenseService : LicenseEntity
+deactivate licenseRepository
+
+licenseService -> groupService : LicenseEntity
+deactivate licenseService
+else #pink Failure
+activate DB
+DB -> licenseRepository : [SqlError] SQL Error
+licenseRepository -> licenseService : [SqlError] SQL Error
+licenseService -> loggerService : CALL eventErrorResponse(eventType = "ArloSubGroupUpdate", eventpayload, error)
+licenseService -> groupService : [Error] Unprocessable Entity, Error in updating sub group license
+groupService -> arloWebhookService : [Error] Unprocessable Entity, Error in updating sub group license
+deactivate DB
+end
+
+groupService -> loggerService : CALL eventSuccessResponse(eventType = "ArloSubGroupUpdate", eventpayload, subGroupdetails: GroupEntity, licensedetails: LicenseEntity)
+deactivate groupService
+end
+deactivate arloWebHookController
+@enduml

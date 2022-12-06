@@ -1,0 +1,87 @@
+@startuml
+collections jbicService          as jbicService
+collections arloAuthMiddleware   as arloAuthMiddleware
+collections arloAuthService      as arloAuthService
+collections arloResourcesService as arloResourcesService
+database    Cache                as Cache
+participant ARLO                 as ARLO
+
+activate jbicService #lightblue
+group ARLO Auth Middleware: Authenticate call
+jbicService -> arloAuthMiddleware: functionCall()
+
+activate arloAuthMiddleware #yellow
+arloAuthMiddleware --> arloAuthService: CALL checkAccess()
+activate arloAuthService #red
+activate Cache #magenta
+arloAuthService --> Cache: check for access token **existence** or **expiry** in **jaas_jbic_arlo_oauth2_tokens**
+
+Cache --> arloAuthService: token AND expiry
+
+alt#Gold Access token not expired
+arloAuthService --[#green]> arloAuthService: access_token not expired
+arloAuthService --[#green]> arloAuthMiddleware: access_token
+arloAuthMiddleware --[#green]> jbicService: access_token
+jbicService --> loggingService: Log to GCP and Datadog <Successful API call>
+
+else if access token expired > refresh said token > save updated token > log success
+alt#gold #E8F3D6 Success
+arloAuthService --> loggingService: Log to GCP and Datadog <Access token expired>
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token?refresh_token=<REFRESH_TOKEN>
+ARLO --> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Update** access_token, refresh_token, expires_in
+Cache --> arloAuthService: access_token, refresh_token, expires_in
+arloAuthService --> arloAuthMiddleware: access_token
+arloAuthMiddleware --> jbicService: access_token
+jbicService --> loggingService: Log to GCP and Datadog <Successful API call>
+
+else #pink failure: log failure event > send error up stack
+arloAuthService --> loggingService: Log to GCP and Datadog <Error message from ARLO>
+ARLO --> arloAuthService: [Error: 500] <Error message from ARLO>
+arloAuthService --> arloAuthMiddleware: [Error: 500] <Error message from ARLO>
+arloAuthMiddleware --> jbicService: [Error: 500] <Error message from ARLO>
+end
+
+else if in possible rare instance access token is invalid > refresh said token > save updated token> log success
+alt#red #FCF9BE Success
+jbicService --> arloAuthService: [Error: 401 or 403] access_token invalid
+arloAuthService --> loggingService: Log to GCP and Datadog <Access token invalid>
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token
+ARLO --> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Update** access_token, refresh_token, expires_in
+Cache --> arloAuthService: access_token, refresh_token, expires_in
+arloAuthService --> arloAuthMiddleware: access_token
+arloAuthMiddleware --> jbicService: access_token
+jbicService --> loggingService: Log to GCP and Datadog <Successful API call>
+else #pink failure: log failure event > log failure event > send error up stack
+arloAuthService --> loggingService: Log to GCP and Datadog <Error message from ARLO>
+ARLO --> arloAuthService: [Error: 500] <Error message from ARLO>
+arloAuthService --> arloAuthMiddleware: [Error: 500] <Error message from ARLO>
+arloAuthMiddleware --> jbicService: [Error: 500] <Error message from ARLO>
+end
+
+else if no access token found > log event > call endpoint that returns authorisation code > use authorisation_code to call endpoint that returns access_token > get and store jwt to cache > return access_token up stack > log success
+alt#Gold #FFDCA9 Success
+activate ARLO #FFD100
+arloAuthService --> loggingService: Log to GCP and Datadog <Access token not found>
+arloAuthService --> ARLO: GET /oauth/connect/authorize?client_id=ENV_VARIABLE
+
+ARLO --> arloAuthService: GET ENV.ARLO_CALLBACK/oauth/arlo/callback?code=authorisation_code
+arloAuthService --> ARLO: POST /ENV.PLATFORM_NAME/oauth/connect/token?code=authorisation_code
+ARLO --> arloAuthService: JSON Object (JWT)
+arloAuthService --> Cache: **Store** access_token, refresh_token, expires_in
+Cache --> arloAuthService: access_token, refresh_token, expires_in
+arloAuthService --> arloAuthMiddleware: access_token
+arloAuthMiddleware --> jbicService: access_token
+jbicService --> loggingService: Log to GCP and Datadog <Successful API call>
+else #pink failure: log failure event > send error up stack
+arloAuthService --> loggingService: Log to GCP and Datadog <ARLO credentials incorrect>
+ARLO --> arloAuthService: [Error: 401] Access Denied
+arloAuthService --> arloAuthMiddleware: [Error: 401] Access Denied
+arloAuthMiddleware --> jbicService: [Error: 401] Access Denied
+end `End of alt
+end
+
+deactivate arloAuthService
+end `End of Access token found
+@enduml

@@ -14,23 +14,36 @@ GroupUserAttributeRepository --> DB: getOne() query
 DB --> GroupUserAttributeRepository: GroupUserAttributeEntity
 GroupUserAttributeRepository --> groupUserAttributeService: GroupUserAttributeEntity
 
-alt#Gold if duplicate found
-groupUserAttributeService --> groupUserAttributeController: true
-groupUserAttributeController --> adminUI: true
-adminUI --> admin: Validation error:  Attribute already exists
-else
+alt#Gold #ADE792 if no duplicate found
 groupUserAttributeService --> groupUserAttributeController: false
 groupUserAttributeController --> adminUI: false
 adminUI --> groupUserAttributeController: POST /group-user-attributes/create
+else #pink
+groupUserAttributeService --> groupUserAttributeController: true
+groupUserAttributeController --> adminUI: true
+adminUI --> admin: Validation error:  Attribute already exists
 end
 
 groupUserAttributeController --> groupUserAttributeService: createGroupUserAttribute()
-groupUserAttributeService --> GroupUserAttributeRepository: createGroupUserAttribute()
+groupUserAttributeService --> groupUserAttributeService: verifyGroupUserAttribute()
+groupUserAttributeService --> GroupUserAttributeRepository: getGroupUserAttributeTypeByLabelType()
+GroupUserAttributeRepository --> DB: getOne() query
+DB --> GroupUserAttributeRepository: GroupUserAttributeEntity
+GroupUserAttributeRepository --> groupUserAttributeService: GroupUserAttributeEntity
+
+alt#Gold #ADE792 if no duplicate found
+groupUserAttributeService --> GroupUserAttributeRepository: insertGroupUserAttribute()
 GroupUserAttributeRepository --> DB: insert() GroupUserAttributeEntity
 DB --> GroupUserAttributeRepository: CreateGroupUserAttributeResponse
 GroupUserAttributeRepository --> groupUserAttributeService: CreateGroupUserAttributeResponse
 groupUserAttributeService --> groupUserAttributeController: CreateGroupUserAttributeResponse
 groupUserAttributeController --> adminUI: CreateGroupUserAttributeResponse
 adminUI --> admin: Success message
+else #pink
+groupUserAttributeService --> groupUserAttributeController: Error 400: Duplicate attribute
+groupUserAttributeController --> adminUI: Error 400: Duplicate attribute
+adminUI --> admin: Show error message: Attribute already exists
+end
+
 
 @enduml

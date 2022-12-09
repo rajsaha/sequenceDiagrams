@@ -1,0 +1,25 @@
+@startuml
+actor       Admin             as admin
+boundary    adminUI           as adminUI
+collections groupUserAttributeController  as groupUserAttributeController
+collections groupUserAttributeService      as groupUserAttributeService
+entity      GroupUserAttributeRepository   as GroupUserAttributeRepository
+database    DB                as DB
+
+admin -> adminUI: [Web page] /admin/user-management?tab=Attributes
+adminUI --> groupUserAttributeController: GET /group-user-attributes/verify?label=<label>&groupUserAttributeTypeId=<id>
+
+groupUserAttributeController --> groupUserAttributeService: createGroupUserAttribute()
+
+groupUserAttributeService --> GroupUserAttributeRepository: insertGroupUserAttribute()
+note left
+User attribute slug is given an UUID. Example: 'department-<UUID>'
+end note
+GroupUserAttributeRepository --> DB: insert() GroupUserAttributeEntity
+DB --> GroupUserAttributeRepository: CreateGroupUserAttributeResponse
+GroupUserAttributeRepository --> groupUserAttributeService: CreateGroupUserAttributeResponse
+groupUserAttributeService --> groupUserAttributeController: CreateGroupUserAttributeResponse
+groupUserAttributeController --> adminUI: CreateGroupUserAttributeResponse
+adminUI --> admin: Success message
+
+@enduml

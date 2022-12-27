@@ -1,0 +1,47 @@
+@startuml
+collections chargeCodeService          as chargeCodeService
+collections chargeCodeAuthService      as chargeCodeAuthService
+database    Cache                      as Cache
+participant Adelaide                   as Adelaide
+
+activate chargeCodeService #lightblue
+group Charge Code Auth Service: Authenticate call
+chargeCodeService -> chargeCodeAuthService: functionCall()
+
+activate chargeCodeAuthService #yellow
+chargeCodeAuthService --> chargeCodeAuthService: CALL checkAccess()
+activate Cache #magenta
+chargeCodeAuthService --> Cache: check for access token **existence** or **expiry**
+
+Cache --> chargeCodeAuthService: token AND expiry
+
+alt#Gold Access token not expired
+chargeCodeAuthService --[#green]> chargeCodeAuthService: access_token not expired
+chargeCodeAuthService --[#green]> chargeCodeService: access_token
+chargeCodeService --> loggingService: Log to GCP and Datadog <Successful API call>
+else if Access token expired
+alt#gold #E8F3D6 Success
+chargeCodeAuthService --> loggingService: Log to GCP and Datadog <Access token expired>
+chargeCodeAuthService --> Adelaide: CALL Endpoint with refresh token - GET {REFRESH_TOKEN_URL}?refresh_token={refresh_token}
+activate Adelaide
+Adelaide --> chargeCodeAuthService: JWT Token
+chargeCodeAuthService --> Cache: Store JWT Token
+chargeCodeAuthService --> chargeCodeService: access_token
+else #pink failure: log failure event > send error up stack
+chargeCodeAuthService --> loggingService: Log error to GCP and Datadog
+chargeCodeAuthService --> chargeCodeService: [Error: 403/500] Error message from Adelaide
+end
+else if Access token not found
+alt#gold #E8F3D6 Success
+chargeCodeAuthService --> loggingService: Log to GCP and Datadog <Access token not found>
+chargeCodeAuthService --> Adelaide: CALL GET {GET_ACCESS_TOKEN_URL}?client_id=${client_id}&client_secret={client_secret}
+Adelaide --> chargeCodeAuthService: JWT Token, refresh_token
+deactivate Adelaide
+chargeCodeAuthService --> Cache: Store JWT Token
+chargeCodeAuthService --> chargeCodeService: access_token
+else #pink failure: log failure event > send error up stack
+chargeCodeAuthService --> loggingService: Log error to GCP and Datadog
+chargeCodeAuthService --> chargeCodeService: [Error: 403/500] Error message from Adelaide
+end
+end `End of Access token found
+@enduml
